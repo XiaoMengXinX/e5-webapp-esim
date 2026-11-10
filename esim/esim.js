@@ -839,16 +839,29 @@ function adoptDownloadJob(job) {
   state.metadata = job.metadata;
 }
 
+function resetDownloadTracking(request, trusted, metadata) {
+ state.cancelling = false;
+ state.previewShown = false;
+ state.job = null;
+ state.metadata = metadata || null;
+ state.downloadRequest = request || null;
+ state.downloadTrusted = !!trusted;
+ state.downloadError = null;
+ state.startPending = false;
+ state.downloadWatching = false;
+ state.downloadFailures = 0;
+ state.cancelBusy = false;
+ state.cancelError = '';
+ state.recoverText = '';
+ state.recoverDetail = '';
+ state.checkingStatus = false;
+}
+
 function downloadRecover(text, detail) {
  state.recoverText = text || t('无法确定下载任务状态。', 'Unable to determine the download task state.');
  state.recoverDetail = detail ? errorMessage(detail) : '';
  state.view = 'download_recover';
  render();
-}
-
-function unknownDownloadResult() {
- return { error: 'lpac', detail: t('无法确认本次下载结果，请检查配置文件列表。',
-  'The result of this download could not be confirmed; check the profile list.') };
 }
 
 function finishRecoveredTerminal(job) {
@@ -863,7 +876,8 @@ function finishRecoveredTerminal(job) {
   return true;
  }
  if (job.state === 'done')
-  finishDownload(false, unknownDownloadResult());
+  finishDownload(false, { error: 'lpac', detail: t('无法确认本次下载结果，请检查配置文件列表。',
+   'The result of this download could not be confirmed; check the profile list.') });
  else
   finishDownload(false, job);
  return true;
@@ -1038,22 +1052,9 @@ function startDownload() {
  const slot = state.slot;
  const request = { slot, aid: String(slots[slot].aid || '') };
  state.downloading = true;
- state.cancelling = false;
- state.previewShown = false;
- state.metadata = null;
- state.job = null;
  state.waitText = '';
- state.downloadRequest = request;
- state.downloadTrusted = false;
- state.downloadError = null;
+ resetDownloadTracking(request, false, null);
  state.startPending = true;
- state.downloadWatching = false;
- state.downloadFailures = 0;
- state.cancelBusy = false;
- state.cancelError = '';
- state.recoverText = '';
- state.recoverDetail = '';
- state.checkingStatus = false;
  stopJobPoll();
  state.view = 'download_progress';
  render();
@@ -1238,23 +1239,9 @@ async function checkDownloadStatus() {
 
 function finishDownload(ok, result, cancelled) {
  stopJobPoll();
- state.downloadWatching = false;
  const cancelledNow = cancelled === true || isCancelledJob(result);
  state.downloading = false;
- state.cancelling = false;
- state.previewShown = false;
- state.metadata = null;
- state.job = null;
- state.downloadRequest = null;
- state.downloadTrusted = false;
- state.downloadError = null;
- state.startPending = false;
- state.downloadFailures = 0;
- state.cancelBusy = false;
- state.cancelError = '';
- state.recoverText = '';
- state.recoverDetail = '';
- state.checkingStatus = false;
+ resetDownloadTracking(null, false, null);
  if (!ok) {
   if (cancelledNow)
    e5.toast(t('已取消下载', 'Download cancelled'));
@@ -1288,21 +1275,8 @@ function resumeDownload(job) {
  state.slot = job.slot === 1 ? 1 : 0;
  slots[state.slot].aid = job.aid || '';
  state.downloading = true;
- state.cancelling = false;
- state.previewShown = false;
- state.metadata = job.metadata || null;
  state.waitText = '';
- state.downloadRequest = { slot: state.slot, aid: String(job.aid || '') };
- state.downloadTrusted = true;
- state.downloadError = null;
- state.startPending = false;
- state.downloadWatching = false;
- state.downloadFailures = 0;
- state.cancelBusy = false;
- state.cancelError = '';
- state.recoverText = '';
- state.recoverDetail = '';
- state.checkingStatus = false;
+ resetDownloadTracking({ slot: state.slot, aid: String(job.aid || '') }, true, job.metadata || null);
  state.view = 'download_progress';
  render();
  watchDownload(job);
