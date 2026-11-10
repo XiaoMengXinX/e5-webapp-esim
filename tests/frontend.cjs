@@ -209,15 +209,342 @@ function downloadScenario() {
                 return { running: false };
             stage++;
             if (stage === 1)
-                return { running: true, type: 'download', slot: 0, step: 'es9p_authenticate_client' };
+                return { running: true, type: 'download', slot: 0, aid: SE0, step: 'es9p_authenticate_client' };
             if (stage === 2)
-                return { running: true, type: 'download', slot: 0, preview: true,
+                return { running: true, type: 'download', slot: 0, aid: SE0, preview: true,
                     metadata: { serviceProviderName: 'Carrier', profileName: 'Preview', iccid: '8944001', profileClass: 'prod' } };
             if (stage === 3 || stage === 4)
-                return { running: true, type: 'download', slot: 0, step: 'es10b_load_bound_profile_package',
+                return { running: true, type: 'download', slot: 0, aid: SE0, step: 'es10b_load_bound_profile_package',
                     write: { written: 6300, total: 10000, percent: 63 } };
-            return { running: false, state: 'failed', error: 'cancelled' };
+            return { running: false, type: 'download', slot: 0, aid: SE0, state: 'failed', error: 'cancelled' };
         }
+        return { ok: true };
+    };
+}
+
+function rejectedStartReachedScenario() {
+    let job = { running: false };
+    return async (pathname, opts) => {
+        if (pathname === '/status')
+            return { installed: true, installing: false, error: null };
+        if (pathname !== '/rpc')
+            return { ok: true };
+        const method = opts.body && opts.body.method;
+        const params = opts.body && opts.body.params || {};
+        if (method === 'dependencies')
+            return { ok: true, data: { ready: true, missing: [] } };
+        if (method === 'snapshot')
+            return snapshot(params);
+        if (method === 'download_start') {
+            job = { running: true, type: 'download', slot: 0, aid: SE0, step: 'es9p_authenticate_client' };
+            throw new Error('connection lost');
+        }
+        if (method === 'job_status')
+            return job;
+        if (method === 'job_cancel') {
+            job = { running: false, type: 'download', slot: 0, aid: SE0, state: 'cancelled', error: 'cancelled' };
+            return { ok: true };
+        }
+        return { ok: true };
+    };
+}
+
+function rejectedStartNoTaskScenario() {
+    return async (pathname, opts) => {
+        if (pathname === '/status')
+            return { installed: true, installing: false, error: null };
+        if (pathname !== '/rpc')
+            return { ok: true };
+        const method = opts.body && opts.body.method;
+        const params = opts.body && opts.body.params || {};
+        if (method === 'dependencies')
+            return { ok: true, data: { ready: true, missing: [] } };
+        if (method === 'snapshot')
+            return snapshot(params);
+        if (method === 'download_start')
+            throw new Error('download start failed');
+        if (method === 'job_status')
+            return { running: false };
+        return { ok: true };
+    };
+}
+
+function startUnknownScenario() {
+    return async (pathname, opts) => {
+        if (pathname === '/status')
+            return { installed: true, installing: false, error: null };
+        if (pathname !== '/rpc')
+            return { ok: true };
+        const method = opts.body && opts.body.method;
+        const params = opts.body && opts.body.params || {};
+        if (method === 'dependencies')
+            return { ok: true, data: { ready: true, missing: [] } };
+        if (method === 'snapshot')
+            return snapshot(params);
+        if (method === 'download_start')
+            throw new Error('download start failed');
+        if (method === 'job_status')
+            throw new Error('status offline');
+        return { ok: true };
+    };
+}
+
+function cancelRetryScenario() {
+    let started = false;
+    let cancelCalls = 0;
+    let job = { running: false };
+    return async (pathname, opts) => {
+        if (pathname === '/status')
+            return { installed: true, installing: false, error: null };
+        if (pathname !== '/rpc')
+            return { ok: true };
+        const method = opts.body && opts.body.method;
+        const params = opts.body && opts.body.params || {};
+        if (method === 'dependencies')
+            return { ok: true, data: { ready: true, missing: [] } };
+        if (method === 'snapshot')
+            return snapshot(params);
+        if (method === 'download_start') {
+            started = true;
+            job = { running: true, type: 'download', slot: 0, aid: SE0, step: 'es9p_authenticate_client' };
+            return { ok: true };
+        }
+        if (method === 'job_status')
+            return started ? job : { running: false };
+        if (method === 'job_cancel') {
+            cancelCalls++;
+            if (cancelCalls === 1)
+                return null;
+            if (cancelCalls === 2)
+                return { ok: false, error: 'busy' };
+            job = { running: false, type: 'download', slot: 0, aid: SE0, state: 'cancelled', error: 'cancelled' };
+            return { ok: true };
+        }
+        return { ok: true };
+    };
+}
+
+function pollOutageScenario() {
+    let started = false;
+    let failures = 0;
+    let outage = true;
+    let job = { running: false };
+    return async (pathname, opts) => {
+        if (pathname === '/status')
+            return { installed: true, installing: false, error: null };
+        if (pathname !== '/rpc')
+            return { ok: true };
+        const method = opts.body && opts.body.method;
+        const params = opts.body && opts.body.params || {};
+        if (method === 'dependencies')
+            return { ok: true, data: { ready: true, missing: [] } };
+        if (method === 'snapshot')
+            return snapshot(params);
+        if (method === 'download_start') {
+            started = true;
+            job = { running: true, type: 'download', slot: 0, aid: SE0, step: 'es10b_load_bound_profile_package',
+                write: { written: 4200, total: 10000, percent: 42 } };
+            return { ok: true };
+        }
+        if (method === 'job_status') {
+            if (!started)
+                return { running: false };
+            if (outage) {
+                failures++;
+                if (failures <= 3)
+                    throw new Error('status offline');
+                outage = false;
+            }
+            return job;
+        }
+        if (method === 'job_cancel') {
+            job = { running: false, type: 'download', slot: 0, aid: SE0, state: 'cancelled', error: 'cancelled' };
+            return { ok: true };
+        }
+        return { ok: true };
+    };
+}
+
+function previewCancelScenario() {
+    let started = false;
+    let job = { running: false };
+    return async (pathname, opts) => {
+        if (pathname === '/status')
+            return { installed: true, installing: false, error: null };
+        if (pathname !== '/rpc')
+            return { ok: true };
+        const method = opts.body && opts.body.method;
+        const params = opts.body && opts.body.params || {};
+        if (method === 'dependencies')
+            return { ok: true, data: { ready: true, missing: [] } };
+        if (method === 'snapshot')
+            return snapshot(params);
+        if (method === 'download_start') {
+            started = true;
+            job = { running: true, type: 'download', slot: 0, aid: SE0, preview: true,
+                metadata: { serviceProviderName: 'Carrier', profileName: 'Preview', iccid: '8944001' } };
+            return { ok: true };
+        }
+        if (method === 'job_status')
+            return started ? job : { running: false };
+        if (method === 'job_confirm')
+            return { ok: true };
+        if (method === 'job_cancel') {
+            job = { running: false, type: 'download', slot: 0, aid: SE0, state: 'cancelled', error: 'cancelled' };
+            return { ok: true };
+        }
+        return { ok: true };
+    };
+}
+
+function cancelActualSuccessScenario() {
+    let started = false;
+    let cancelling = false;
+    let polls = 0;
+    let job = { running: false };
+    return async (pathname, opts) => {
+        if (pathname === '/status')
+            return { installed: true, installing: false, error: null };
+        if (pathname !== '/rpc')
+            return { ok: true };
+        const method = opts.body && opts.body.method;
+        const params = opts.body && opts.body.params || {};
+        if (method === 'dependencies')
+            return { ok: true, data: { ready: true, missing: [] } };
+        if (method === 'snapshot')
+            return snapshot(params);
+        if (method === 'download_start') {
+            started = true;
+            job = { running: true, type: 'download', slot: 0, aid: SE0, step: 'es10b_load_bound_profile_package',
+                write: { written: 8000, total: 10000, percent: 80 } };
+            return { ok: true };
+        }
+        if (method === 'job_status') {
+            if (!started)
+                return { running: false };
+            if (cancelling) {
+                polls++;
+                if (polls >= 2)
+                    job = { running: false, type: 'download', slot: 0, aid: SE0, state: 'done', data: [PROFILE_ON] };
+            }
+            return job;
+        }
+        if (method === 'job_cancel') {
+            cancelling = true;
+            return { ok: true };
+        }
+        return { ok: true };
+    };
+}
+
+function cancelDuringStartScenario() {
+    let started = false;
+    let job = { running: false };
+    return async (pathname, opts) => {
+        if (pathname === '/status')
+            return { installed: true, installing: false, error: null };
+        if (pathname !== '/rpc')
+            return { ok: true };
+        const method = opts.body && opts.body.method;
+        const params = opts.body && opts.body.params || {};
+        if (method === 'dependencies')
+            return { ok: true, data: { ready: true, missing: [] } };
+        if (method === 'snapshot')
+            return snapshot(params);
+        if (method === 'download_start') {
+            started = true;
+            job = { running: true, type: 'download', slot: 0, aid: SE0, step: 'es9p_authenticate_client' };
+            await new Promise((resolve) => setTimeout(resolve, 800));
+            return { ok: true };
+        }
+        if (method === 'job_status')
+            return started ? job : { running: false };
+        if (method === 'job_cancel') {
+            job = { running: false, type: 'download', slot: 0, aid: SE0, state: 'cancelled', error: 'cancelled' };
+            return { ok: true };
+        }
+        return { ok: true };
+    };
+}
+
+function explicitBusyScenario() {
+    let oldJob = { running: false };
+    return async (pathname, opts) => {
+        if (pathname === '/status')
+            return { installed: true, installing: false, error: null };
+        if (pathname !== '/rpc')
+            return { ok: true };
+        const method = opts.body && opts.body.method;
+        const params = opts.body && opts.body.params || {};
+        if (method === 'dependencies')
+            return { ok: true, data: { ready: true, missing: [] } };
+        if (method === 'snapshot')
+            return snapshot(params);
+        if (method === 'download_start') {
+            oldJob = { running: true, type: 'download', slot: 0, aid: SE0, step: 'es10b_load_bound_profile_package' };
+            return { ok: false, error: 'busy' };
+        }
+        if (method === 'job_status')
+            return oldJob;
+        if (method === 'job_cancel')
+            return { ok: true };
+        return { ok: true };
+    };
+}
+
+function mismatchRunningScenario() {
+    let started = false;
+    return async (pathname, opts) => {
+        if (pathname === '/status')
+            return { installed: true, installing: false, error: null };
+        if (pathname !== '/rpc')
+            return { ok: true };
+        const method = opts.body && opts.body.method;
+        const params = opts.body && opts.body.params || {};
+        if (method === 'dependencies')
+            return { ok: true, data: { ready: true, missing: [] } };
+        if (method === 'snapshot')
+            return snapshot(params);
+        if (method === 'download_start') {
+            started = true;
+            return { ok: true };
+        }
+        if (method === 'job_status') {
+            if (!started)
+                return { running: false };
+            return { running: true, type: 'download', slot: 1, aid: SE0,
+                metadata: { profileName: 'OtherTask' }, step: 'es9p_authenticate_client' };
+        }
+        if (method === 'job_cancel')
+            return { ok: true };
+        return { ok: true };
+    };
+}
+
+function lateCancelFailureScenario() {
+    let started = false;
+    return async (pathname, opts) => {
+        if (pathname === '/status')
+            return { installed: true, installing: false, error: null };
+        if (pathname !== '/rpc')
+            return { ok: true };
+        const method = opts.body && opts.body.method;
+        const params = opts.body && opts.body.params || {};
+        if (method === 'dependencies')
+            return { ok: true, data: { ready: true, missing: [] } };
+        if (method === 'snapshot')
+            return snapshot(params);
+        if (method === 'download_start') {
+            started = true;
+            return { ok: true };
+        }
+        if (method === 'job_status') {
+            if (!started)
+                return { running: false };
+            return { running: false, type: 'download', slot: 0, aid: SE0, state: 'done', data: [PROFILE_ON] };
+        }
+        if (method === 'job_cancel')
+            return new Promise((resolve, reject) => setTimeout(() => reject(new Error('late cancel failure')), 1500));
         return { ok: true };
     };
 }
@@ -258,7 +585,7 @@ function resumeDownloadScenario() {
         if (method === 'snapshot')
             return snapshot(params);
         if (method === 'job_status')
-            return { running: true, type: 'download', slot: 0, state: 'running', step: 'es10b_load_bound_profile_package',
+            return { running: true, type: 'download', slot: 0, aid: SE0, state: 'running', step: 'es10b_load_bound_profile_package',
                 write: { written: 6300, total: 10000, percent: 63 } };
         return { ok: true };
     };
@@ -806,7 +1133,230 @@ async function noOverflow(page) {
             assert.equal(await page.evaluate(() => window.__calls.filter((call) => call.path === '/rpc' && call.opts.body.method === 'job_confirm').length), 1);
             assert.equal(await page.evaluate(() => window.__calls.filter((call) => call.path === '/rpc' && call.opts.body.method === 'job_cancel').length), 1);
             assert.ok((await page.locator('#app').textContent()).includes('激活码'));
+            assert.equal((await rpcCalls(page, 'download_start')).length, 1);
             await noOverflow(page);
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // A rejected download_start whose request did reach the backend resumes the active task.
+        {
+            const page = await open(browser, base, rejectedStartReachedScenario);
+            await waitView(page, 'root');
+            await page.getByRole('button', { name: '添加' }).click();
+            await waitView(page, 'download');
+            await page.locator('#esim-activation').fill('LPA:1$server$code');
+            await page.getByRole('button', { name: '下载', exact: true }).click();
+            await waitView(page, 'download_progress');
+            await page.waitForTimeout(1200);
+            assert.equal(await page.locator('#app').getAttribute('data-view'), 'download_progress');
+            assert.equal((await rpcCalls(page, 'download_start')).length, 1);
+            assert.equal((await rpcCalls(page, 'job_confirm')).length, 0);
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // A rejected start with no matching active task returns to the form with an error.
+        {
+            const page = await open(browser, base, rejectedStartNoTaskScenario);
+            await waitView(page, 'root');
+            await page.getByRole('button', { name: '添加' }).click();
+            await waitView(page, 'download');
+            await page.locator('#esim-activation').fill('LPA:1$server$code');
+            await page.getByRole('button', { name: '下载', exact: true }).click();
+            await waitView(page, 'download');
+            assert.ok((await page.evaluate(() => window.__toasts)).includes('操作失败，请重试'));
+            assert.equal((await rpcCalls(page, 'download_start')).length, 1);
+            assert.equal(await page.getByRole('button', { name: '下载', exact: true }).isVisible(), true);
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // An unknown start with unavailable status shows recoverable status controls.
+        {
+            const page = await open(browser, base, startUnknownScenario);
+            await waitView(page, 'root');
+            await page.getByRole('button', { name: '添加' }).click();
+            await waitView(page, 'download');
+            await page.locator('#esim-activation').fill('LPA:1$server$code');
+            await page.getByRole('button', { name: '下载', exact: true }).click();
+            await waitView(page, 'download_recover');
+            assert.ok(await page.getByRole('button', { name: '检查状态' }).isVisible());
+            assert.ok(await page.getByRole('button', { name: '取消下载' }).isVisible());
+            await page.getByRole('button', { name: '检查状态' }).click();
+            await page.waitForFunction(() => document.getElementById('app').textContent.includes('仍无法获取下载任务状态'), null, { timeout: 5000 });
+            assert.ok(await page.getByRole('button', { name: '检查状态' }).isEnabled());
+            assert.equal((await rpcCalls(page, 'download_start')).length, 1);
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // A failed job_cancel surfaces feedback and the retry remains enabled.
+        {
+            const page = await open(browser, base, cancelRetryScenario);
+            await waitView(page, 'root');
+            await page.getByRole('button', { name: '添加' }).click();
+            await waitView(page, 'download');
+            await page.locator('#esim-activation').fill('LPA:1$server$code');
+            await page.getByRole('button', { name: '下载', exact: true }).click();
+            await waitView(page, 'download_progress');
+            await page.getByRole('button', { name: '取消下载', exact: true }).click();
+            await waitView(page, 'download_recover');
+            assert.ok((await page.locator('#app').textContent()).includes('取消请求失败'));
+            assert.ok((await page.locator('#app').textContent()).includes('取消下载返回异常'));
+            assert.ok(await page.getByRole('button', { name: '取消下载' }).isEnabled());
+            await page.getByRole('button', { name: '取消下载' }).click();
+            await page.waitForFunction(() => document.getElementById('app').textContent.includes('eSIM 正忙'));
+            await page.getByRole('button', { name: '取消下载' }).click();
+            await waitView(page, 'download');
+            assert.equal((await rpcCalls(page, 'job_cancel')).length, 3);
+            assert.equal((await rpcCalls(page, 'download_start')).length, 1);
+            assert.ok((await page.evaluate(() => window.__toasts)).includes('已取消下载'));
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // Cancelling while download_start is pending defers job_cancel until the task exists.
+        {
+            const page = await open(browser, base, cancelDuringStartScenario);
+            await waitView(page, 'root');
+            await page.getByRole('button', { name: '添加' }).click();
+            await waitView(page, 'download');
+            await page.locator('#esim-activation').fill('LPA:1$server$code');
+            await page.getByRole('button', { name: '下载', exact: true }).click();
+            await waitView(page, 'download_progress');
+            await page.getByRole('button', { name: '取消下载' }).click();
+            await waitView(page, 'download_wait');
+            await page.waitForTimeout(300);
+            assert.equal((await rpcCalls(page, 'job_cancel')).length, 0);
+            await waitView(page, 'download');
+            assert.equal((await rpcCalls(page, 'job_cancel')).length, 1);
+            assert.equal((await rpcCalls(page, 'download_start')).length, 1);
+            assert.ok((await page.evaluate(() => window.__toasts)).includes('已取消下载'));
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // An explicit {ok:false} start failure is final and does not adopt an existing task.
+        {
+            const page = await open(browser, base, explicitBusyScenario);
+            await waitView(page, 'root');
+            const before = (await rpcCalls(page, 'job_status')).length;
+            await page.getByRole('button', { name: '添加' }).click();
+            await waitView(page, 'download');
+            await page.locator('#esim-activation').fill('LPA:1$server$code');
+            await page.getByRole('button', { name: '下载', exact: true }).click();
+            await waitView(page, 'download');
+            assert.equal((await rpcCalls(page, 'job_status')).length, before);
+            assert.equal((await rpcCalls(page, 'download_start')).length, 1);
+            assert.equal((await rpcCalls(page, 'job_cancel')).length, 0);
+            assert.ok((await page.evaluate(() => window.__toasts)).includes('eSIM 正忙，请稍后再试'));
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // A running task for another slot is not adopted, previewed or cancelled.
+        {
+            const page = await open(browser, base, mismatchRunningScenario);
+            await waitView(page, 'root');
+            await page.getByRole('button', { name: '添加' }).click();
+            await waitView(page, 'download');
+            await page.locator('#esim-activation').fill('LPA:1$server$code');
+            await page.getByRole('button', { name: '下载', exact: true }).click();
+            await waitView(page, 'download_recover');
+            assert.ok((await page.locator('#app').textContent()).includes('检测到其他下载任务'));
+            assert.equal((await page.locator('#app').textContent()).includes('OtherTask'), false);
+            await page.getByRole('button', { name: '取消下载' }).click();
+            await waitView(page, 'download_recover');
+            await page.waitForTimeout(300);
+            assert.equal((await rpcCalls(page, 'job_cancel')).length, 0);
+            assert.ok((await page.locator('#app').textContent()).includes('检测到其他下载任务'));
+            assert.equal((await rpcCalls(page, 'download_start')).length, 1);
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // A late cancel failure after the task has already succeeded is ignored.
+        {
+            const page = await open(browser, base, lateCancelFailureScenario);
+            await waitView(page, 'root');
+            await page.getByRole('button', { name: '添加' }).click();
+            await waitView(page, 'download');
+            await page.locator('#esim-activation').fill('LPA:1$server$code');
+            await page.getByRole('button', { name: '下载', exact: true }).click();
+            await waitView(page, 'download_progress');
+            await page.getByRole('button', { name: '取消下载' }).click();
+            await waitView(page, 'root');
+            await page.waitForTimeout(1000);
+            assert.equal(await page.locator('#app').getAttribute('data-view'), 'root');
+            assert.equal((await page.locator('#app').textContent()).includes('取消请求失败'), false);
+            const toasts = await page.evaluate(() => window.__toasts);
+            assert.ok(toasts.includes('配置文件已下载'));
+            assert.equal(toasts.includes('已取消下载'), false);
+            assert.equal((await rpcCalls(page, 'job_cancel')).length, 1);
+            assert.equal((await rpcCalls(page, 'download_start')).length, 1);
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // Three status failures stop polling; Check status recovers the active task.
+        {
+            const page = await open(browser, base, pollOutageScenario);
+            await waitView(page, 'root');
+            await page.getByRole('button', { name: '添加' }).click();
+            await waitView(page, 'download');
+            await page.locator('#esim-activation').fill('LPA:1$server$code');
+            await page.getByRole('button', { name: '下载', exact: true }).click();
+            await waitView(page, 'download_progress');
+            await waitView(page, 'download_recover');
+            assert.ok((await page.locator('#app').textContent()).includes('连续三次无法获取下载任务状态'));
+            const failedPolls = await rpcCalls(page, 'job_status');
+            await page.getByRole('button', { name: '检查状态' }).click();
+            await waitView(page, 'download_progress');
+            await page.waitForFunction(() => document.getElementById('app').textContent.includes('42%'), null, { timeout: 5000 });
+            await page.getByRole('button', { name: '取消下载' }).click();
+            await waitView(page, 'download');
+            assert.equal((await rpcCalls(page, 'download_start')).length, 1);
+            assert.ok((await rpcCalls(page, 'job_status')).length > failedPolls.length);
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // Cancelling from the preview does not confirm the download.
+        {
+            const page = await open(browser, base, previewCancelScenario);
+            await waitView(page, 'root');
+            await page.getByRole('button', { name: '添加' }).click();
+            await waitView(page, 'download');
+            await page.locator('#esim-activation').fill('LPA:1$server$code');
+            await page.getByRole('button', { name: '下载', exact: true }).click();
+            await waitView(page, 'download_preview');
+            await page.getByRole('button', { name: '取消', exact: true }).click();
+            await waitView(page, 'download');
+            assert.equal((await rpcCalls(page, 'job_confirm')).length, 0);
+            assert.equal((await rpcCalls(page, 'job_cancel')).length, 1);
+            assert.equal((await rpcCalls(page, 'download_start')).length, 1);
+            assert.ok((await page.evaluate(() => window.__toasts)).includes('已取消下载'));
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // A cancel request racing a completed task reports the real success, not cancellation.
+        {
+            const page = await open(browser, base, cancelActualSuccessScenario);
+            await waitView(page, 'root');
+            await page.getByRole('button', { name: '添加' }).click();
+            await waitView(page, 'download');
+            await page.locator('#esim-activation').fill('LPA:1$server$code');
+            await page.getByRole('button', { name: '下载', exact: true }).click();
+            await waitView(page, 'download_progress');
+            await page.getByRole('button', { name: '取消下载' }).click();
+            await waitView(page, 'root');
+            const toasts = await page.evaluate(() => window.__toasts);
+            assert.ok(toasts.includes('配置文件已下载'));
+            assert.equal(toasts.includes('已取消下载'), false);
+            assert.equal((await rpcCalls(page, 'download_start')).length, 1);
+            assert.equal((await rpcCalls(page, 'job_cancel')).length, 1);
             assert.deepEqual(page.errors, []);
             await page.close();
         }

@@ -12,12 +12,14 @@ E5 信息屏的 eSIM 管理 WebApp，适用于 OpenWrt 25.12.5 和信息屏插�
 
 信息屏与 LuCI 共用后台任务和操作锁。关闭应用后任务继续执行，再次打开可恢复任务显示。配置文件操作会影响对应卡槽的网络连接。
 
+下载启动响应丢失时，应用会查询并接管已运行的任务。取消失败可重试；连续三次无法查询任务状态时，会显示状态检查和取消入口，保留激活码与所选卡槽。HTTP 阶段取消通常约 3 秒内收尾，正在执行的 AT 命令会先完成或超时，再退出清理。安装已经成功时保留成功结果，未上报的通知可稍后处理。
+
 ## 安装
 
-从 [Releases](https://github.com/XiaoMengXinX/e5-webapp-esim/releases/latest) 下载 `esim-*.tar.gz`，上传到信息屏的「应用管理」。本地构建的安装包位于 `dist/esim-1.0.1.tar.gz`，也可复制到设备后执行：
+从 [Releases](https://github.com/XiaoMengXinX/e5-webapp-esim/releases/latest) 下载 `esim-*.tar.gz`，上传到信息屏的「应用管理」。本地构建的安装包位于 `dist/esim-1.0.2.tar.gz`，也可复制到设备后执行：
 
 ```sh
-/usr/libexec/e5-infoscreen/plugin install /tmp/esim-1.0.1.tar.gz
+/usr/libexec/e5-infoscreen/plugin install /tmp/esim-1.0.2.tar.gz
 ```
 
 每个新安装包会在信息屏首次加载后端时启动一次配套安装，包括应用尚未打开时的通知轮询。打开应用后，安装日志在独立区域滚动显示并跟随最新输出；向上滚动可查看历史。失败时保留日志和重试按钮。安装需要设备能够访问配置的软件源。LuCI 面板位于「蜂窝 → eSIM 管理」。
