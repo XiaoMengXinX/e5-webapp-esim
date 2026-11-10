@@ -14,19 +14,21 @@ case "${1:-}" in
  start)
   mkdir -p "$RUN"
   chmod 700 "$RUN"
-  (
-   flock -n 9 || exit 0
-   exec sh "$DIR/install.sh" run >"$RUN/install.log" 2>&1
-  ) 9>"$RUN/lock" </dev/null >/dev/null 2>&1 &
+  exec 9>"$RUN/lock"
+  flock -n 9 || exit 0
+  cp "$DIR/package.sha256" "$RUN/package.sha256"
+  cp "$DIR/luci-app-e5-esim.apk" "$RUN/luci-app-e5-esim.apk"
+  cp "$RUN/package.sha256" "$DIR/.install-attempt"
+  echo running > "$RUN/result"
+  sh "$DIR/install.sh" run </dev/null >"$RUN/install.log" 2>&1 &
   ;;
  run)
   trap 'echo "$?" > "$RUN/result"' EXIT
-  cp "$DIR/package.sha256" "$RUN/attempt.sha256"
-  cd "$DIR"
+  cd "$RUN"
   sha256sum -c package.sha256
   apk update
-  apk add --allow-untrusted ./luci-app-e5-esim.apk
-  cp package.sha256 .installed-sha256
+  apk add --allow-untrusted "$RUN/luci-app-e5-esim.apk"
+  cp package.sha256 "$DIR/.installed-sha256"
   ;;
  *) exit 2 ;;
 esac

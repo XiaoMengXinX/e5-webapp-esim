@@ -57,7 +57,8 @@ window.__exited = false;
   api(path, opts) {
    const call = { path, opts: opts || {} };
    window.__calls.push(call);
-   return Promise.resolve().then(() => window.__mock(path, opts || {}));
+   const pathname = String(path).split('?')[0];
+   return Promise.resolve().then(() => window.__mock(pathname, opts || {}, path));
   },
   onKey(fn) { window.__onKey = fn; },
   onBack(fn) { window.__onBack = fn; },
@@ -297,7 +298,7 @@ function installScenario() {
         if (pathname === '/install') {
             installs++;
             installed = true;
-            return { ok: true };
+            return { installed: true, installing: false, error: null };
         }
         if (pathname === '/rpc') {
             const method = opts.body.method;
@@ -318,7 +319,7 @@ function pendingInstallScenario() {
         if (pathname === '/status') {
             stage++;
             if (stage < 3)
-                return { installed: false, installing: true, error: null };
+                return { installed: true, installing: true, error: null };
             return { installed: true, installing: false, error: null };
         }
         if (pathname === '/rpc') {
@@ -343,7 +344,7 @@ function dependencyScenario() {
         if (pathname === '/install') {
             installing = true;
             setTimeout(() => { installed = true; installing = false; }, 1300);
-            return { ok: true };
+            return { installed: true, installing: true, error: null };
         }
         if (pathname === '/rpc') {
             const method = opts.body.method;
@@ -355,6 +356,97 @@ function dependencyScenario() {
                 return { running: false };
             if (method === 'snapshot')
                 return snapshot(opts.body.params);
+        }
+        return { ok: true };
+    };
+}
+
+function idleInstallScenario() {
+    return async (pathname, opts) => {
+        if (pathname === '/status')
+            return { installed: false, installing: false, error: null };
+        if (pathname === '/install')
+            return { installed: true, installing: false, error: null };
+        if (pathname === '/rpc') {
+            const method = opts.body.method;
+            if (method === 'dependencies')
+                return { ok: true, data: { ready: true, missing: [] } };
+            if (method === 'job_status')
+                return { running: false };
+            if (method === 'snapshot')
+                return snapshot(opts.body.params);
+        }
+        return { ok: true };
+    };
+}
+
+function postMissingScenario() {
+    return async (pathname) => {
+        if (pathname === '/status')
+            return { installed: false, installing: false, error: null };
+        if (pathname === '/install')
+            return { installed: false, installing: false, error: 'install failed' };
+        return { ok: true };
+    };
+}
+
+function liveLogScenario() {
+    let stage = 0;
+    const escape = String.fromCharCode(27);
+    const url = 'https://example.com/' + 'very-long-token-'.repeat(10);
+    const lines = (count) => Array.from({ length: count }, (_, index) => `line ${index + 1} ${url}`).join('\n');
+    return async (pathname, opts) => {
+        if (pathname === '/status') {
+            stage++;
+            if (stage === 1)
+                return { installed: false, installing: true, error: null,
+                    log: 'start\n<b>not-html</b>\n' + escape + '[31mred' + escape + '[0m\rprogress 10%\rprogress 20%\n' + lines(20) };
+            if (stage === 2)
+                return { installed: false, installing: true, error: null,
+                    log: 'start\nred\nprogress 10%\nprogress 20%\n' + lines(25) };
+            if (stage === 3)
+                return { installed: false, installing: true, error: null,
+                    log: 'start\nred\nprogress 10%\nprogress 20%\n' + lines(30) };
+            return { installed: true, installing: false, error: null,
+                log: 'done\n' + lines(31) };
+        }
+        if (pathname === '/rpc') {
+            const method = opts.body.method;
+            if (method === 'dependencies')
+                return { ok: true, data: { ready: true, missing: [] } };
+            if (method === 'job_status')
+                return { running: false };
+            if (method === 'snapshot')
+                return snapshot(opts.body.params);
+        }
+        return { ok: true };
+    };
+}
+
+function failureLogScenario() {
+    let stage = 0;
+    const url = 'https://example.com/' + 'very-long-token-'.repeat(10);
+    return async (pathname) => {
+        if (pathname === '/status') {
+            stage++;
+            if (stage === 1)
+                return { installed: false, installing: true, error: null,
+                    log: 'start\ninstalling package\n' };
+            return { installed: false, installing: false, error: 'Installation failed',
+                log: 'start\ninstalling package\nFAILED: missing dependency\n' + url };
+        }
+        return { ok: true };
+    };
+}
+
+function pollErrorScenario() {
+    let stage = 0;
+    return async (pathname) => {
+        if (pathname === '/status') {
+            stage++;
+            if (stage === 1)
+                return { installed: false, installing: true, error: null };
+            throw new Error('network down');
         }
         return { ok: true };
     };
@@ -373,6 +465,12 @@ async function open(browser, base, scenarioFactory) {
     await page.goto(base + '/', { waitUntil: 'load' });
     page.errors = errors;
     return page;
+}
+
+function statusPaths(page) {
+    return page.evaluate(() => window.__calls
+        .map((call) => call.path)
+        .filter((name) => name === '/status' || name === '/status?check=1'));
 }
 
 function rpcCalls(page, method) {
@@ -397,9 +495,14 @@ async function noOverflow(page) {
             await waitView(page, 'install');
             assert.ok((await page.locator('#app').textContent()).includes('组件安装失败'));
             assert.ok(await page.getByRole('button', { name: '重试安装' }).isVisible());
+            await page.waitForTimeout(1200);
+            assert.deepEqual(await statusPaths(page), ['/status?check=1']);
+            assert.equal(await page.locator('#app').getAttribute('data-view'), 'install');
             await page.getByRole('button', { name: '重试安装' }).click();
             await waitView(page, 'root');
             assert.equal(await page.evaluate(() => window.__calls.filter((call) => call.path === '/install').length), 1);
+            await page.waitForTimeout(1200);
+            assert.deepEqual(await statusPaths(page), ['/status?check=1']);
             assert.deepEqual(page.errors, []);
             await page.close();
         }
@@ -411,6 +514,10 @@ async function noOverflow(page) {
             assert.ok((await page.locator('#app').textContent()).includes('正在安装'));
             await waitView(page, 'root');
             assert.ok(await page.getByRole('tab', { name: 'SIM 2' }).isVisible());
+            const pendingStatus = await statusPaths(page);
+            assert.deepEqual(pendingStatus, ['/status?check=1', '/status', '/status']);
+            await page.waitForTimeout(1200);
+            assert.deepEqual(await statusPaths(page), pendingStatus);
             assert.deepEqual(page.errors, []);
             await page.close();
         }
@@ -420,11 +527,140 @@ async function noOverflow(page) {
             const page = await open(browser, base, dependencyScenario);
             await waitView(page, 'deps');
             assert.ok((await page.locator('#app').textContent()).includes('lpac'));
+            assert.deepEqual(await statusPaths(page), ['/status?check=1']);
             await page.getByRole('button', { name: '安装组件' }).click();
             await page.waitForTimeout(300);
             assert.equal(await page.locator('#app').getAttribute('data-view'), 'install');
             await waitView(page, 'root');
             assert.equal(await page.evaluate(() => window.__calls.filter((call) => call.path === '/install').length), 1);
+            const dependencyStatus = await statusPaths(page);
+            assert.deepEqual(dependencyStatus, ['/status?check=1', '/status', '/status']);
+            await page.waitForTimeout(1200);
+            assert.deepEqual(await statusPaths(page), dependencyStatus);
+            await page.close();
+        }
+
+        // Idle missing install stays on the Install screen without polling.
+        {
+            const page = await open(browser, base, idleInstallScenario);
+            await waitView(page, 'install');
+            assert.ok(await page.getByRole('button', { name: '安装', exact: true }).isVisible());
+            await page.waitForTimeout(1200);
+            assert.deepEqual(await statusPaths(page), ['/status?check=1']);
+            await page.getByRole('button', { name: '安装', exact: true }).click();
+            await waitView(page, 'root');
+            await page.waitForTimeout(1200);
+            assert.deepEqual(await statusPaths(page), ['/status?check=1']);
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // A POST response that is still missing is applied immediately and does not poll.
+        {
+            const page = await open(browser, base, postMissingScenario);
+            await waitView(page, 'install');
+            await page.getByRole('button', { name: '安装', exact: true }).click();
+            await waitView(page, 'install');
+            await page.waitForFunction(() => document.getElementById('app').textContent.includes('install failed'), null, { timeout: 5000 });
+            assert.ok(await page.getByRole('button', { name: '重试安装' }).isVisible());
+            await page.waitForTimeout(1200);
+            assert.deepEqual(await statusPaths(page), ['/status?check=1']);
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // A failing status poll shows the error once and stops.
+        {
+            const page = await open(browser, base, pollErrorScenario);
+            await waitView(page, 'install');
+            await page.waitForFunction(() => document.getElementById('app').textContent.includes('network down'), null, { timeout: 5000 });
+            assert.deepEqual(await statusPaths(page), ['/status?check=1', '/status']);
+            assert.ok(await page.getByRole('button', { name: '重试安装' }).isVisible());
+            await page.waitForTimeout(1200);
+            assert.deepEqual(await statusPaths(page), ['/status?check=1', '/status']);
+            assert.equal(await page.locator('#app').getAttribute('data-view'), 'install');
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // Live install log follows the tail, preserves manual history and stops on success.
+        {
+            const page = await open(browser, base, liveLogScenario);
+            await waitView(page, 'install');
+            await page.setViewportSize({ width: 320, height: 345 });
+            const firstLog = await page.locator('#install-log').textContent();
+            assert.ok(firstLog.includes('red'));
+            assert.ok(firstLog.includes('progress 10%\nprogress 20%'));
+            assert.equal(firstLog.includes('\u001b'), false);
+            assert.equal(firstLog.includes('\r'), false);
+            assert.ok(firstLog.includes('<b>not-html</b>'));
+            assert.equal(await page.locator('#install-log b').count(), 0);
+            assert.ok(firstLog.split('\n').length >= 20);
+            assert.ok(await page.evaluate(() => {
+                const log = document.getElementById('install-log');
+                return log.scrollWidth <= log.clientWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth &&
+                    document.querySelector('[data-focus="install"]').getBoundingClientRect().bottom <= window.innerHeight;
+            }));
+            await page.evaluate(() => window.__onKey({ kind: 'up' }));
+            assert.equal(await page.evaluate(() => document.activeElement.id), 'install-log');
+            const logBefore = await page.evaluate(() => document.getElementById('install-log').scrollTop);
+            await page.evaluate(() => window.__onKey({ kind: 'up' }));
+            assert.ok(await page.evaluate((before) => document.getElementById('install-log').scrollTop < before, logBefore));
+            assert.equal(await page.evaluate(() => document.activeElement.id), 'install-log');
+            await page.evaluate(() => {
+                const log = document.getElementById('install-log');
+                log.scrollTop = log.scrollHeight;
+                log.dispatchEvent(new Event('scroll'));
+            });
+            await page.evaluate(() => window.__onKey({ kind: 'down' }));
+            assert.equal(await page.evaluate(() => document.activeElement.dataset.focus), 'install');
+            await page.evaluate(() => {
+                const log = document.getElementById('install-log');
+                log.scrollTop = 0;
+                log.dispatchEvent(new Event('scroll'));
+            });
+            await page.waitForFunction(() => document.getElementById('install-log').textContent.includes('line 25'), null, { timeout: 15000 });
+            assert.ok(await page.evaluate(() => document.getElementById('install-log').scrollTop <= 1));
+            assert.equal(await page.evaluate(() => document.activeElement.dataset.focus), 'install');
+            await page.evaluate(() => {
+                const log = document.getElementById('install-log');
+                log.scrollTop = log.scrollHeight;
+                log.dispatchEvent(new Event('scroll'));
+            });
+            await page.waitForFunction(() => document.getElementById('install-log').textContent.includes('line 30'), null, { timeout: 15000 });
+            assert.ok(await page.evaluate(() => {
+                const log = document.getElementById('install-log');
+                return log.scrollHeight - log.scrollTop - log.clientHeight <= 8;
+            }));
+            await waitView(page, 'root');
+            await page.waitForTimeout(1200);
+            assert.deepEqual(await statusPaths(page), ['/status?check=1', '/status', '/status', '/status']);
+            assert.equal(await page.locator('#install-log').count(), 0);
+            assert.deepEqual(page.errors, []);
+            await page.close();
+        }
+
+        // Terminal failure keeps the concise error and the log panel, then stops polling.
+        {
+            const page = await open(browser, base, failureLogScenario);
+            await waitView(page, 'install');
+            await page.setViewportSize({ width: 320, height: 345 });
+            await page.waitForFunction(() => document.getElementById('install-log').textContent.includes('FAILED: missing dependency'), null, { timeout: 15000 });
+            const hintText = await page.locator('#app .state-hint').textContent();
+            assert.ok(hintText.includes('Installation failed'));
+            assert.ok(hintText.includes('重试'));
+            assert.equal((await page.locator('#app').textContent()).split('Installation failed').length - 1, 1);
+            const logText = await page.locator('#install-log').textContent();
+            assert.ok(logText.includes('FAILED: missing dependency'));
+            assert.ok(await page.getByRole('button', { name: '重试安装' }).isVisible());
+            assert.ok(await page.evaluate(() => {
+                const retry = document.querySelector('[data-focus="install"]').getBoundingClientRect();
+                return document.documentElement.scrollWidth <= window.innerWidth && retry.bottom <= window.innerHeight;
+            }));
+            await page.waitForTimeout(1200);
+            assert.deepEqual(await statusPaths(page), ['/status?check=1', '/status']);
+            assert.ok((await page.locator('#install-log').textContent()).includes('FAILED: missing dependency'));
+            assert.deepEqual(page.errors, []);
             await page.close();
         }
 
@@ -599,7 +835,7 @@ async function noOverflow(page) {
             await page.close();
         }
 
-        console.log('Frontend tests passed: install/retry/poll, dependencies, both slots, persisted SE scan, profile operations, notifications, download preview/progress/cancel, resumed job, key focus and language.');
+        console.log('Frontend tests passed: install poll/log/retry, dependencies, both slots, persisted SE scan, profile operations, notifications, download preview/progress/cancel, resumed job, key focus and language.');
     } finally {
         await browser.close();
         await new Promise((resolve) => server.close(resolve));

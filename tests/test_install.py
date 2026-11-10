@@ -51,7 +51,8 @@ esac
 
     def wait(self):
         for _ in range(100):
-            if (self.run / 'result').exists():
+            if ((self.run / 'result').exists() and
+                    (self.run / 'result').read_text().strip() != 'running'):
                 # Wait for the lock to be released after the result is written.
                 subprocess.run(['flock', str(self.run / 'lock'), 'true'], check=True)
                 return (self.run / 'result').read_text().strip()
@@ -61,12 +62,15 @@ esac
     def test_install_and_concurrent_start(self):
         self.assertNotEqual(self.call('check'), 0)
         self.assertEqual(self.call('start'), 0)
+        self.assertEqual((self.run / 'result').read_text().strip(), 'running')
+        self.assertEqual((self.plugin / '.install-attempt').read_text(),
+                         (self.plugin / 'package.sha256').read_text())
         self.assertEqual(self.call('start'), 0)
         self.assertEqual(self.wait(), '0')
         self.assertEqual(self.call('check'), 0)
         calls = (self.base / 'calls').read_text().splitlines()
         self.assertEqual(calls.count('update'), 1)
-        self.assertEqual(calls.count('add --allow-untrusted ./luci-app-e5-esim.apk'), 1)
+        self.assertEqual(calls.count(f'add --allow-untrusted {self.run}/luci-app-e5-esim.apk'), 1)
 
     def test_failure_and_retry(self):
         (self.base / 'fail').touch()
@@ -74,10 +78,19 @@ esac
         self.assertNotEqual(self.wait(), '0')
         self.assertNotEqual(self.call('check'), 0)
         (self.base / 'fail').unlink()
-        (self.run / 'result').unlink()
         self.call('start')
         self.assertEqual(self.wait(), '0')
         self.assertEqual(self.call('check'), 0)
+
+    def test_install_uses_snapshot_during_bundle_replacement(self):
+        digest = (self.plugin / 'package.sha256').read_text()
+        self.call('start')
+        self.apk.write_bytes(b'updated bundle')
+        (self.plugin / 'package.sha256').write_text('updated digest\n')
+        self.assertEqual(self.wait(), '0')
+        self.assertEqual((self.run / self.apk.name).read_bytes(), b'test package')
+        self.assertEqual((self.plugin / '.installed-sha256').read_text(), digest)
+        self.assertNotEqual(self.call('check'), 0)
 
     def test_checksum_failure_does_not_install(self):
         self.apk.write_bytes(b'corrupted package')

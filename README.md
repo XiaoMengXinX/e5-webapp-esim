@@ -14,13 +14,15 @@ E5 信息屏的 eSIM 管理 WebApp，适用于 OpenWrt 25.12.5 和信息屏插�
 
 ## 安装
 
-将构建生成的 `dist/esim-1.0.0.tar.gz` 上传到信息屏的「应用管理」，或复制到设备后执行：
+将构建生成的 `dist/esim-1.0.1.tar.gz` 上传到信息屏的「应用管理」，或复制到设备后执行：
 
 ```sh
-/usr/libexec/e5-infoscreen/plugin install /tmp/esim-1.0.0.tar.gz
+/usr/libexec/e5-infoscreen/plugin install /tmp/esim-1.0.1.tar.gz
 ```
 
-信息屏加载应用后端时会在后台安装包内的 `luci-app-e5-esim.apk`，包括应用尚未打开时的通知轮询。首次打开应用会显示安装状态；失败时显示错误日志，可点击重试。安装需要设备能够访问配置的软件源。LuCI 面板位于「蜂窝 → eSIM 管理」。
+每个新安装包会在信息屏首次加载后端时启动一次配套安装，包括应用尚未打开时的通知轮询。打开应用后，安装日志在独立区域滚动显示并跟随最新输出；向上滚动可查看历史。失败时保留日志和重试按钮。安装需要设备能够访问配置的软件源。LuCI 面板位于「蜂窝 → eSIM 管理」。
+
+打开应用时进行一次实际包检查；安装期间每秒读取进度和日志，完成或失败后停止轮询。通知轮询只读取安装尝试标记，由新包触发一次安装。普通 eSIM 请求直接调用后台。
 
 LuCI APK 保留 `luci-base`、`rpcd`、`python3`、`lpac`、`libcurl-gnutls4` 依赖声明。LuCI 页面还会检查 `/usr/lib/lpac` 和 `/usr/lib/libcurl-gnutls.so.4`，缺失时给出安装命令和软件包管理入口。
 
@@ -51,7 +53,7 @@ python3 tools/build.py
 | `tools/build.py` | 固定 SDK 构建及应用打包 |
 | `tests/` | 界面流程与后台安装回归测试 |
 
-安装器校验随包 APK 的 SHA-256，通过 `apk add --allow-untrusted` 安装本地 APK，软件源依赖仍由 apk 解析。成功后记录包摘要，后续轮询只检查状态；升级 WebApp 时自动安装新的配套包。
+安装器在独立工作目录保存 APK 快照、校验 SHA-256，通过 `apk add --allow-untrusted` 安装本地 APK，软件源依赖仍由 apk 解析。成功后记录所安装包的摘要；升级 WebApp 时自动安装新的配套包。
 
 ## 验证
 

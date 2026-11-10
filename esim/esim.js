@@ -164,10 +164,6 @@ function message(text) {
  return h('p', { class: 'muted', text });
 }
 
-function note(text) {
- return h('p', { class: 'note', text });
-}
-
 function kv(label, value, mono) {
  return h('div', { class: 'kv' }, [
   h('div', { class: 'k', text: label }),
@@ -204,7 +200,7 @@ function newSlot() {
 
 const slots = [newSlot(), newSlot()];
 const state = {
- installed: null, installing: false, installError: null, dependencies: null,
+ installed: null, installing: false, installError: null, installLog: '', dependencies: null,
  view: 'boot', slot: 0, pick: true,
  profile: null, notification: null, confirm: null,
  activation: '', confirmation: '', name: '',
@@ -215,6 +211,8 @@ const state = {
 let statusTimer = null;
 let jobTimer = null;
 let progressRefs = null;
+let installLogFollow = true;
+let installLogTop = 0;
 
 function currentSlot() {
  return slots[state.slot];
@@ -232,12 +230,57 @@ function setView(view) {
  render();
 }
 
+function cleanInstallLog(value) {
+ return String(value || '')
+  .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
+  .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+  .replace(/\u001b[@-_]/g, '')
+  .replace(/\r\n?/g, '\n')
+  .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+}
+
+function logAtBottom(node) {
+ return node.scrollHeight - node.scrollTop - node.clientHeight <= 8;
+}
+
+function logPanel() {
+ const node = h('pre', { id: 'install-log', class: 'install-log', tabindex: '0' }, state.installLog);
+ node.addEventListener('scroll', () => {
+  installLogTop = node.scrollTop;
+  installLogFollow = logAtBottom(node);
+ });
+ return node;
+}
+
+function paintInstallLog(initial) {
+ const node = document.getElementById('install-log');
+ if (!node)
+  return false;
+ if (node.textContent !== state.installLog) {
+  const follow = initial ? installLogFollow : (installLogFollow || logAtBottom(node));
+  const top = initial ? installLogTop : node.scrollTop;
+  node.textContent = state.installLog;
+  node.scrollTop = follow ? node.scrollHeight : top;
+  installLogFollow = follow;
+ } else if (initial) {
+  node.scrollTop = installLogFollow ? node.scrollHeight : installLogTop;
+ }
+ installLogTop = node.scrollTop;
+ return true;
+}
+
+function syncInstallView() {
+ return state.view === 'install' && paintInstallLog(false);
+}
+
 function applyStatus(status) {
  if (!isObject(status))
   throw new Error(t('状态无效', 'Invalid status'));
  state.installed = status.installed === true;
  state.installing = status.installing === true;
  state.installError = status.error || null;
+ if (typeof status.log === 'string')
+  state.installLog = cleanInstallLog(status.log);
  if (status.dependencies)
   state.dependencies = normalizeDependencies(status.dependencies) || status.dependencies;
 }
@@ -251,19 +294,25 @@ function scheduleStatusPoll() {
    return;
   try {
    applyStatus(await e5.api('/status'));
-   if (state.installed && !state.installing && state.view === 'install')
-    await initialize();
-   else if (!state.installed || state.view === 'install')
-    render();
-  } catch (error) {
-   if (state.view !== 'install')
+   if (state.installing) {
     state.view = 'install';
-   state.installError = error && error.message ? error.message : String(error);
+    if (!syncInstallView())
+     render();
+    scheduleStatusPoll();
+    return;
+   }
+   if (state.installed) {
+    await initialize();
+    return;
+   }
+   state.view = 'install';
+   render();
+  } catch (error) {
    state.installing = false;
+   state.installError = error && error.message ? error.message : String(error);
+   state.view = 'install';
    render();
   }
-  if (!state.installed || state.installing || state.view === 'install')
-   scheduleStatusPoll();
  }, POLL_MS);
 }
 
@@ -318,40 +367,61 @@ async function startInstall() {
   return;
  state.installing = true;
  state.installError = null;
+ state.installLog = '';
+ installLogFollow = true;
+ installLogTop = 0;
  state.view = 'install';
  render();
  try {
   const result = await e5.api('/install', { method: 'POST', body: {} });
   if (isObject(result) && result.ok === false)
    throw new Error(result.error || result.detail || 'install');
+  applyStatus(result);
  } catch (error) {
   state.installing = false;
   state.installError = error && error.message ? error.message : String(error);
+  stopStatusPoll();
   render();
   return;
  }
- scheduleStatusPoll();
+ if (state.installing) {
+  state.view = 'install';
+  if (!syncInstallView())
+   render();
+  scheduleStatusPoll();
+  return;
+ }
+ stopStatusPoll();
+ if (state.installed) {
+  await initialize();
+  return;
+ }
+ state.view = 'install';
+ render();
 }
 
 async function checkStatus(initial) {
  try {
-  applyStatus(await e5.api('/status'));
-  if (!state.installed) {
+  applyStatus(await e5.api(initial ? '/status?check=1' : '/status'));
+  if (state.installing) {
    state.view = 'install';
    render();
    scheduleStatusPoll();
    return;
   }
   stopStatusPoll();
-  if (initial || state.view === 'install')
+  if (state.installed) {
    await initialize();
- } catch (error) {
-  state.installed = false;
-  state.installing = false;
-  state.installError = error && error.message ? error.message : String(error);
+   return;
+  }
   state.view = 'install';
   render();
-  scheduleStatusPoll();
+ } catch (error) {
+  state.installing = false;
+  state.installError = error && error.message ? error.message : String(error);
+  stopStatusPoll();
+  state.view = 'install';
+  render();
  }
 }
 
@@ -955,6 +1025,8 @@ function render() {
  app.replaceChildren(...viewNodes());
  renderChrome();
  app.dataset.view = state.view;
+ if (state.view === 'install')
+  paintInstallLog(true);
  if (!app.children.length)
   return;
  let target = previousFocus ? findFocus(previousFocus) : null;
@@ -1006,18 +1078,20 @@ function viewNodes() {
 function installNodes() {
  const installing = state.installing;
  const error = state.installError;
+ const hint = installing
+  ? t('安装完成后会自动进入 eSIM 管理', 'eSIM management opens automatically when installation finishes')
+  : error
+   ? error + ' · ' + t('检查网络或软件包源后重试。', 'Check the network or package sources and try again.')
+   : t('首次使用需要安装 lpac 等组件。', 'lpac and related components are installed on first use.');
  const nodes = [stateCard(
   installing ? t('正在安装 eSIM 组件…', 'Installing eSIM components…')
    : error ? t('组件安装失败', 'Component installation failed')
    : t('需要安装 eSIM 组件', 'eSIM components are required'),
-  installing ? t('安装完成后会自动进入 eSIM 管理', 'eSIM management opens automatically when installation finishes')
-   : error || t('首次使用需要安装 lpac 等组件。', 'lpac and related components are installed on first use.'),
+  hint,
   installing
  )];
- if (error && !installing) {
-  const detail = String(error);
-  nodes.push(card([message(detail), note(t('检查网络或软件包源后重试。', 'Check the network or package sources and try again.'))]));
- }
+ if (installing || state.installLog)
+  nodes.push(card([heading(t('安装日志', 'Installation log')), logPanel()], 'log-card'));
  nodes.push(h('div', { class: 'actions' }, [
   button(installing ? t('正在安装…', 'Installing…') : error ? t('重试安装', 'Retry install') : t('安装', 'Install'),
    'primary', 'install', startInstall)
@@ -1404,7 +1478,7 @@ function findFocus(key) {
 }
 
 function bodyFocusables() {
- return Array.from(app.querySelectorAll('button:not([disabled]), input:not([disabled])'))
+ return Array.from(app.querySelectorAll('button:not([disabled]), input:not([disabled]), #install-log'))
   .filter((node) => !node.closest('[hidden]'));
 }
 
@@ -1502,6 +1576,28 @@ function handleKey(key) {
     return true;
    }
   }
+ }
+ if (active && active.id === 'install-log' && (key.kind === 'up' || key.kind === 'down')) {
+  const atBottom = logAtBottom(active);
+  if (key.kind === 'up') {
+   if (active.scrollTop > 0) {
+    active.scrollTop = Math.max(0, active.scrollTop - Math.max(18, Math.floor(active.clientHeight * .6)));
+    installLogTop = active.scrollTop;
+    installLogFollow = logAtBottom(active);
+   }
+   return true;
+  }
+  if (!atBottom) {
+   active.scrollTop = Math.min(active.scrollHeight, active.scrollTop + Math.max(18, Math.floor(active.clientHeight * .6)));
+   installLogTop = active.scrollTop;
+   installLogFollow = logAtBottom(active);
+   return true;
+  }
+  const items = bodyFocusables();
+  const next = items[items.indexOf(active) + 1];
+  if (next)
+   return focusNode(next);
+  return true;
  }
  if (key.kind === 'digit' && active && active.tagName === 'INPUT' && /^[0-9*#]$/.test(key.key || '')) {
   insertDigit(active, key.key);

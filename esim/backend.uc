@@ -11,27 +11,38 @@ function quote(value) {
 }
 
 return function(ctx) {
- function status() {
-  let installed = ctx.run(`sh ${DIR}/install.sh check >/dev/null 2>&1`) == 0;
-  let installing = ctx.run(`test -f ${RUN}/lock && ! flock -n ${RUN}/lock true`) == 0;
+ function status(check) {
+  let digest = readfile(`${DIR}/package.sha256`);
+  let installed = digest != null && readfile(`${DIR}/.installed-sha256`) == digest;
   let result = trim(readfile(`${RUN}/result`) ?? '');
-  return { installed, installing,
-   error: !installed && !installing && result != '' && result != '0'
-    ? substr(readfile(`${RUN}/install.log`) ?? 'Installation failed', -6000) : null };
+  let installing = result == 'running' && ctx.run(`flock -n ${RUN}/lock true`) != 0;
+  if (check && !installing)
+   installed = ctx.run(`sh ${DIR}/install.sh check >/dev/null 2>&1`) == 0;
+  let error = !installing && result == 'running' ? 'Installation interrupted'
+   : !installed && !installing && result != '' && result != '0' ? 'Installation failed' : null;
+  return { installed, installing, error,
+   log: installing || error ? substr(readfile(`${RUN}/install.log`) ?? '', -6000) : '' };
  }
  function start() {
   ctx.run(`sh ${DIR}/install.sh start`);
-  return status();
+  return status(false);
  }
- // The host polls this backend after installing the app, including while its UI is closed.
- if (ctx.run(`sh ${DIR}/install.sh check >/dev/null 2>&1`) != 0 &&
-     (readfile(`${RUN}/attempt.sha256`) != readfile(`${DIR}/package.sha256`) ||
-      trim(readfile(`${RUN}/result`) ?? '') == '0'))
-  start();
+ function installBundle() {
+  let digest = readfile(`${DIR}/package.sha256`);
+  if (digest != null && readfile(`${DIR}/.install-attempt`) != digest)
+   start();
+ }
  return {
-  'GET /status': status,
+  'GET /status': function(req) {
+   installBundle();
+   return status(req.query?.check == '1');
+  },
   'POST /install': start,
-  'GET /notifications': function() { return { notifications: [] }; },
+  // A newly installed bundle is picked up even while the app is closed.
+  'GET /notifications': function() {
+   installBundle();
+   return { notifications: [] };
+  },
   'POST /rpc': function(req) {
    let method = req.body?.method;
    if (!(method in METHODS) || type(req.body?.params) != 'object')
