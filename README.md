@@ -14,7 +14,7 @@ E5 信息屏的 eSIM 管理 WebApp，适用于 OpenWrt 25.12.5 和信息屏插�
 
 ## 安装
 
-将构建生成的 `dist/esim-1.0.1.tar.gz` 上传到信息屏的「应用管理」，或复制到设备后执行：
+从 [Releases](https://github.com/XiaoMengXinX/e5-webapp-esim/releases/latest) 下载 `esim-*.tar.gz`，上传到信息屏的「应用管理」。本地构建的安装包位于 `dist/esim-1.0.1.tar.gz`，也可复制到设备后执行：
 
 ```sh
 /usr/libexec/e5-infoscreen/plugin install /tmp/esim-1.0.1.tar.gz
@@ -45,6 +45,8 @@ python3 tools/build.py
 ```
 
 脚本下载并校验固定的 OpenWrt 25.12.5 SDK，生成一个 noarch LuCI APK 和包含它的 WebApp 压缩包。已有 SDK 可传入 `--sdk /path/to/sdk`。下载与 SDK 工作目录保存在 `.cache/`，产物位于 `dist/`。
+
+`.github/workflows/release.yml` 在每次 push（所有分支）和手动触发时运行 GitHub Actions；它检出递归子模块、复用固定 SDK 缓存，依次运行 WebApp、LuCI 后端与浏览器测试，再由 `tools/build.py` 构建并发布 `build-<运行号>` Release，附件为 `dist/esim-*.tar.gz` 和 `dist/luci-app-e5-esim-*.apk`。重跑同一工作流会更新该 Release 的说明并覆盖同名附件。
 
 | 路径 | 用途 |
 | --- | --- |

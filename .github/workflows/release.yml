@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd build-essential rsync file gawk python3 libncurses-dev git unzip wget
+
+      - name: Cache OpenWrt SDK
+        uses: actions/cache@v5
+        with:
+          path: .cache/sdk.tar.zst
+          key: openwrt-sdk-1b0316604a3e820b2b008a1baff3f9dac6716af942bef800930e58c7de98c98b
+
+      - name: Test WebApp backend
+        run: python3 -m unittest discover -s tests
+
+      - name: Test LuCI backend
+        working-directory: luci-app-e5-esim
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests
+
+      - name: Test LuCI frontend
+        working-directory: luci-app-e5-esim
+        run: node tests/frontend.cjs
+
+      - name: Test WebApp browser
+        run: |
+          npm install --prefix "$RUNNER_TEMP/e5-esim-tests" --no-package-lock --no-save playwright-core@1.65.0
+          PLAYWRIGHT_MODULE="$RUNNER_TEMP/e5-esim-tests/node_modules/playwright-core" \
+          CHROME_BIN=/usr/bin/google-chrome \
+            node tests/frontend.cjs
+
+      - name: Build
+        run: python3 tools/build.py
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: build-${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          notes="$(mktemp)"
+          trap 'rm -f "$notes"' EXIT
+          git show -s --format=%B HEAD > "$notes"
+          title="Build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA:0:7})"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --target "$GITHUB_SHA" --title "$title" --notes-file "$notes"
+            gh release upload "$TAG" dist/esim-*.tar.gz dist/luci-app-e5-esim-*.apk --clobber
+          else
+            gh release create "$TAG" dist/esim-*.tar.gz dist/luci-app-e5-esim-*.apk \
+              --target "$GITHUB_SHA" --title "$title" --notes-file "$notes"
+          fi
